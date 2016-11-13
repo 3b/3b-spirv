@@ -431,8 +431,8 @@
         :members ,mdumps))))
 
 (defmethod dump* ((base (eql :block)) type)
-  (destructuring-bind (b (&key major packing) &rest members) type
-    (declare (ignore b members))
+  (destructuring-bind (b (&key major packing instance) &rest members) type
+    (declare (ignore b members instance))
     (let ((*packing* (or packing *packing*))
           (*major* (or major *major*)))
       (dump* :struct type))))
