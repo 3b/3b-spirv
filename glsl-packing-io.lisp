@@ -5,6 +5,9 @@
 (in-package #:glsl-packing-io)
 ;;; this should probably be moved to a separate project with glsl-packing
 
+(defparameter *half-float-ext* "GL_NV_gpu_shader5")
+(defparameter *int-8/16-ext* "GL_NV_gpu_shader5")
+
 (defun translate-name (n)
   (if (stringp n)
       n
@@ -12,7 +15,7 @@
 
 (defun print-member (name type)
   (if name
-      (format t "~a ~a;" type (translate-name name))
+      (format t "~a ~a" type (translate-name name))
       type))
 
 (defmethod dump-type (name (base (eql :bool)) type)
@@ -22,25 +25,25 @@
 (defmethod dump-type (name (base (eql :int)) type)
   (print-member name
                 (ecase (second type)
-                  (1 "int8")
-                  (2 "uint16")
-                  (4 "int")
-                  (8 "int64"))))
+                  (8 "int8_t")
+                  (16 "uint16_t")
+                  (32 "int")
+                  (64 "int64"))))
 
 (defmethod dump-type (name (base (eql :uint)) type)
   (print-member name
                 (ecase (second type)
-                  (1 "uint8")
-                  (2 "uint16")
-                  (4 "uint")
-                  (8 "uint64"))))
+                  (8 "uint8_t")
+                  (16 "uint16_t")
+                  (32 "uint")
+                  (64 "uint64"))))
 
 (defmethod dump-type (name (base (eql :float)) type)
   (print-member name
                 (ecase (second type)
-                  (2 "half")
-                  (4 "float")
-                  (8 "double"))))
+                  (16 "float16_t")
+                  (32 "float")
+                  (64 "double"))))
 
 (defmethod dump-type (name (base (eql :vec)) type)
   (print-member name
@@ -48,13 +51,21 @@
                         "~a~a"
                         (ecase (first (second type))
                           (:bool "bvec")
-                          (:int "ivec")
+                          (:int (ecase (second (second type))
+                                  (8 "i8vec")
+                                  (16 "i16vec")
+                                  (32 "ivec")
+                                  (64 "i64vec")))
                           (:uint "uvec")
                           (:float
                            (ecase (second (second type))
-                             (4 "vec")
-                             (8 "dvec"))))
-                        (third type))))
+                             (16 "f16vec")
+                             (32 "vec")
+                             (64 "dvec"))))
+                        (third type)
+                        #++(if (= (third type) 4)
+                            ""
+                            (third type)))))
 
 (defmethod dump-type (name (base (eql :mat)) type)
   (print-member name
@@ -63,18 +74,31 @@
                         (ecase (first (second type))
                           (:float
                            (ecase (second (second type))
-                             (4 "mat")
-                             (8 "dmat"))))
+                             ;;nv_gpu_shader5/AMD_gpu_shader_half_float
+                             (16 "f16mat")
+                             (32 "mat")
+                             (64 "dmat"))))
                         (third type)
                         (fourth type))))
 
 (defmethod dump-type (name (base (eql :array)) type)
-  (if name
-      (format t "~a ~a[~a]" (dump-type nil (caadr type) (second type))
-              name
-              (if (eq (third type) '*) "" (third type)))
-      (format t "~a[~a]" (dump-type nil (caadr type) (second type))
-              (if (eq (third type) '*) "" (third type)))))
+  (cond
+    ((typep (second type) '(cons (eql :array)))
+     (dump-type name :array (second type))
+     (format t "[~a]" (if (eq (third type) '*) "" (third type))))
+    (name
+     (format t "~a ~a[~a]"
+             (if (stringp (second type))
+                 (second type)
+                 (dump-type nil (caadr type) (second type)))
+             name
+             (if (eq (third type) '*) "" (third type))))
+    (t
+     (format t "~a[~a]"
+             (if (stringp (second type))
+                 (second type)
+                 (dump-type nil (caadr type) (second type)))
+             (if (eq (third type) '*) "" (third type))))))
 
 (defmethod dump-type (name base type)
   (print-member name (format nil "~a" type)))
@@ -87,6 +111,7 @@
              (if (consp type)
                  (dump-type name (car type) type)
                  (print-member name type))
+             (format t ";")
           when more
             do (pprint-newline :mandatory))
     (pprint-indent :block -2)
@@ -127,9 +152,9 @@
 (print-structs '((:packing :std140)
                  ("S" (:struct ()
                        (b (:bool))
-                       (v (:array (:vec (:float 4) 4) 5)
+                       (v (:array (:vec (:float 32) 4) 5)
                         :packing :std430)
-                       (i (:int 4))))
+                       (i (:int 32))))
                  (foo
                   (:block (:major :row :packing :std430 :instance foo!)
                     (s "S")

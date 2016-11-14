@@ -14,10 +14,10 @@
 ;;        and extensions?)
 ;; scalar types:
 ;;   (:bool) (:int size), (:uint size), (:float size)
-;;    where size is number of bytes, 1,2,4,8 for int/uint, 2,4,8 for float
-;;    (1,2,8 may require extensions)
+;;    where size is number of bits, 8,16,32,64 for int/uint, 16,32,64 for float
+;;    (8,16,64 may require extensions)
 ;;    (bool are stored as uint, so can be specified as either (:bool)
-;;     or (:uint 4) which might eventually affect whether a hypothetical
+;;     or (:uint 32) which might eventually affect whether a hypothetical
 ;;     accessor generator expected <true>/nil or 1/0)
 ;;   (not sure if we need to distinguish atomic_uint and similar?
 ;; vector/matrix types
@@ -42,7 +42,7 @@
 ;;       or previously defined type name (except :block)
 ;;       (variable size arrays can only be last member of top-level block)
 ;;     ALIGN is 0 or a power of 2 to specify minimum alignment of
-;;        the member
+;;        the member in bytes
 ;;     MAJOR is nil for default matrix layout, or :column, or :row
 
 
@@ -96,7 +96,7 @@
 
 (defun align (type)
   (or (getf (gethash (list type *packing* *major*) *dumped-types*) :align)
-      (getf (gethash type  *dumped-types*) :align)
+      (getf (gethash type *dumped-types*) :align)
       (align* (car type) type)))
 
 (defun stride (type)
@@ -110,6 +110,10 @@
         (stride* (car type) type))))
 
 (defun dump (type)
+  (unless (and (consp type)
+               (member (second type) '(:std140 :std430))
+               (member (third type) '(:row :column)))
+    (setf type (list type *packing* *major*)))
   (cond
     ((consp type)
      (unless (nth-value 1 (gethash type *dumped-types*))
@@ -121,7 +125,7 @@
          (push (list type dump) *output*)
          (setf (gethash type *dumped-types*) dump)))
      (gethash type *dumped-types*))
-    (t
+    #++(t
      ;; dump named types with packing and matrix layout
      (dump (list type *packing* *major*)))))
 
@@ -179,7 +183,7 @@
            ;; std140 alignment is alignment of elements rounded up
            ;; to a multiple of alignment of vec4
            (round-to-multiple-of (align el)
-                                 (align '(:vec (:float 4) 4))))
+                                 (align '(:vec (:float 32) 4))))
           (:std430
            ;; std430 removes the rounding to multiple of vec4
            (align el))))))
@@ -201,7 +205,7 @@
         (:std140
          ;; std140 alignment of struct is max of alignments of members,
          ;; rounded up to multiple of vec4
-         (round-to-multiple-of base-align (align '(:vec (:float 4) 4))))
+         (round-to-multiple-of base-align (align '(:vec (:float 32) 4))))
         (:std430
          ;; std430 removes the rounding to multiple of vec4
          base-align)))))
@@ -210,13 +214,13 @@
   4)
 
 (defmethod size* ((base (eql :int)) type)
-  (second type))
+  (/ (second type) 8))
 
 (defmethod size* ((base (eql :uint)) type)
-  (second type))
+  (/ (second type) 8))
 
 (defmethod size* ((base (eql :float)) type)
-  (second type))
+  (/ (second type) 8))
 
 (defmethod size* ((base (eql :vec)) type)
   (destructuring-bind (b el n) type
@@ -368,7 +372,7 @@
   (list* :size (size type) :align (align type) (stride type)))
 
 (defmethod dump* ((base (eql :struct)) type)
-  (destructuring-bind (b (&key) &rest members) type
+  (destructuring-bind (b (&key  &allow-other-keys) &rest members) type
     (declare (ignore b))
     (let ((salign 0 #++(align type))
           (mdumps nil)
@@ -387,7 +391,7 @@
                   (assert (or (zerop align)
                               (= 1 (logcount align)))))
                 (let* ((*major* (or major *major*))
-                       (mtype-info (dump mtype))
+                       (mtype-info (dump (list mtype *packing* *major*)))
                        (malign (max (getf mtype-info :align)
                                     (or align 0)))
                        (msize (getf mtype-info :size))
@@ -423,8 +427,13 @@
                                      mm :name :offset))))
                     (incf next-offset msize))))))
       (when (eq *packing* :std140)
+        #++(format t "adjust align for struct from ~s to multiple of ~s = ~s~%" salign
+                (align '(:vec (:float 32) 4))
+                (round-to-multiple-of salign
+                      (align '(:vec (:float 32) 4)))
+                )
         (setf salign (round-to-multiple-of salign
-                                           (align '(:vec (:float 4) 4)))))
+                                           (align '(:vec (:float 32) 4)))))
       `(:size ,(round-to-multiple-of next-offset salign)
         :align ,salign
         ,@(stride type)
@@ -497,10 +506,10 @@ data for used scalar/vec/mat types types."
              (when (and (eq (car type) :block)
                         (or (not roots)
                             (member name roots :test 'equal)))
-               (when (assoc name blocks :test 'equal :key 'car)
+               (when (assoc name blocks :test 'equal)
                  (error "duplicate block name ~s?~%~s -> ~s~%"
                         name
-                        (cdr (assoc name blocks :test 'equal :key 'car))
+                        (cdr (assoc name blocks :test 'equal))
                         type))
                (push (list name type) blocks)))
     (setf blocks (nreverse blocks))
@@ -516,13 +525,12 @@ data for used scalar/vec/mat types types."
 (pack-structs '((:packing :std140)
                 ("S" (:struct ()
                       (b (:bool))
-                      (v (:array (:vec (:float 4) 4) 5))
-                      (i (:int 4))))
+                      (v (:array (:vec (:float 32) 4) 5))
+                      (i (:int 32))))
                 (foo
                  (:block ()
                    (s "S")
                    (cond (:bool))))))
-
 
 #++
 (((:BOOL)
