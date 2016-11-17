@@ -412,9 +412,11 @@
                             :align ,malign
                             :size ,msize
                             ,@(when stride
-                                `(:stride  ,stride))
+                                `(:stride ,stride))
                             ,@(when mstride
-                                `(:matrix-stride  ,mstride)))
+                                `(:matrix-stride ,mstride))
+                            ,@ (when mstride
+                                 `(:major ,*major*)))
                            ,@(loop for mm in mmembers
                                    collect
                                    (list*
@@ -492,7 +494,7 @@ data for used scalar/vec/mat types types."
         (*output* nil)
         (blocks nil))
     (loop for (name type) in types
-          #+do (format t "-===== ~s ~s~%" name (if (consp type) (car type) type))
+          do (format t "-===== ~s ~s~%" name (if (consp type) (car type) type))
           when (eq name :packing)
             do (setf *packing* type)
           when (eq name :major)

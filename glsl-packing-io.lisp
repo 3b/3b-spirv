@@ -28,7 +28,7 @@
                   (8 "int8_t")
                   (16 "uint16_t")
                   (32 "int")
-                  (64 "int64"))))
+                  (64 "int64_t"))))
 
 (defmethod dump-type (name (base (eql :uint)) type)
   (print-member name
@@ -36,7 +36,7 @@
                   (8 "uint8_t")
                   (16 "uint16_t")
                   (32 "uint")
-                  (64 "uint64"))))
+                  (64 "uint64_t"))))
 
 (defmethod dump-type (name (base (eql :float)) type)
   (print-member name
@@ -84,8 +84,10 @@
 (defmethod dump-type (name (base (eql :array)) type)
   (cond
     ((typep (second type) '(cons (eql :array)))
-     (dump-type name :array (second type))
-     (format t "[~a]" (if (eq (third type) '*) "" (third type))))
+     (let ((n (format nil "~a[~a]"
+                      (or name "")
+                      (if (eq (third type) '*) "" (third type)))))
+      (dump-type n :array (second type))))
     (name
      (format t "~a ~a[~a]"
              (if (stringp (second type))
