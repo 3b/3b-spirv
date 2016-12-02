@@ -61,24 +61,36 @@
 (defvar *dumped-types*)
 (defvar *output*) ;; bind to nil
 
+(defun lit (n)
+  (etypecase n
+    (number n)
+    ((cons (eql :literal))
+     (assert (numberp (third n)))
+     (third n))))
 
 (deftype scalar () '(cons (member :bool :int :uint :float)))
 (deftype base-type () '(cons (member :bool :int :uint :float :vec :mat)))
 
+(deftype block/buffer/struct () '(cons (member :block :buffer :struct)
+                                  (cons list)))
+
 (deftype type-description ()
-  '(cons (member :bool :int :uint :float :vec :mat :array :struct :block)))
+  '(or block/buffer/struct
+    (cons (member :bool :int :uint :float :vec :mat :array))))
+
 
 (defun round-to-multiple-of (value granularity)
   (* granularity (ceiling value granularity)))
 
 (defun get-type (type &key (errorp t))
-  (typecase type
-    (type-description
-     type)
-    (t
-     (or (gethash type *known-types*)
-         (when errorp
-           (error "unknown type ~s?" type))))))
+  (or (gethash type *known-types*)
+      (typecase type
+        (type-description
+         type)
+        (t
+         (or ;(gethash type *known-types*)
+          (when errorp
+            (error "unknown type ~s?" type)))))))
 
 (defgeneric size* (base type))
 (defgeneric align* (base type))
@@ -124,10 +136,7 @@
               (dump (dump* (car definition) definition)))
          (push (list type dump) *output*)
          (setf (gethash type *dumped-types*) dump)))
-     (gethash type *dumped-types*))
-    #++(t
-     ;; dump named types with packing and matrix layout
-     (dump (list type *packing* *major*)))))
+     (gethash type *dumped-types*))))
 
 
 (defmethod align* (base type)
@@ -162,8 +171,8 @@
 
 
 (defmethod align* ((base (eql :array)) type)
-  (destructuring-bind (b el n) type
-    (declare (ignore b))
+  (destructuring-bind (b el n &rest r) type
+    (declare (ignore b r))
     ;; array of matrices is handles specially:
     (if (typep el '(cons (eql :mat)))
         (destructuring-bind (b mel c r) el
@@ -173,11 +182,11 @@
             (:column
              ;; array of N column-major matrices is treated as an array of
              ;; (* N C) vectors of size R
-             (align `(:array (:vec ,mel ,r) ,(* n c))))
+             (align `(:array (:vec ,mel ,r) ,(* (lit n) c))))
             (:row
              ;; array of N row-major matrices is treated as an array of
              ;; (* N R) vectors of size C
-             (align `(:array (:vec ,mel ,c) ,(* n r))))))
+             (align `(:array (:vec ,mel ,c) ,(* (lit n) r))))))
         (ecase *packing*
           (:std140
            ;; std140 alignment is alignment of elements rounded up
@@ -247,8 +256,8 @@
   (list :matrix-stride (align type)))
 
 (defmethod stride* ((base (eql :array)) type)
-  (destructuring-bind (b el n) type
-    (declare (ignore b n))
+  (destructuring-bind (b el n &rest r) type
+    (declare (ignore b n r))
     (let* ((a (align type))
            (s (size el)))
       (if (eq (car (get-type el)) :mat)
@@ -274,8 +283,8 @@
           (list :stride (round-to-multiple-of s a))))))
 
 (defmethod size* ((base (eql :array)) type)
-  (destructuring-bind (b el n) type
-    (declare (ignore b el))
+  (destructuring-bind (b el n &rest r) type
+    (declare (ignore b el r))
     ;; matrices are handled specially, but STRIDE take care of that
     (let* ((align (align type))
            (stride (getf (stride type) :stride)))
@@ -285,9 +294,7 @@
       (if (eq n '*)
           ;; not sure unsized array should return size of 0 or 1 element?
           0
-          (round-to-multiple-of (* stride n) align)))))
-
-
+          (round-to-multiple-of (* stride (lit n)) align)))))
 
 #++
 (defmethod size* ((base (eql :struct)) type)
@@ -352,6 +359,14 @@
       (size (list* :struct (alexandria:remove-from-plist opts :packing)
                    members)))))
 
+(defmethod size* ((base (eql :buffer-block)) type)
+  ;; same as struct, except allows specifying packing
+  (destructuring-bind (b opts &rest members) type
+    (declare (ignore b))
+    (let ((*packing* (or (getf opts :packing) *packing*)))
+      (size (list* :struct (alexandria:remove-from-plist opts :packing)
+                   members)))))
+
 (defmethod dump* (base type)
   (check-type type scalar)
   (list :size (size type) :align (align type) :base-type t))
@@ -366,7 +381,7 @@
          :base-type t (stride type)))
 
 (defmethod dump* ((base (eql :array)) type)
-  (when (typep (second type) '(cons (member :struct :block)))
+  (when (typep (second type) '(cons (member :struct :block :buffer-block)))
     (error "Can't store anonymous BLOCK or STRUCT in array."))
   (dump (second type))
   (list* :size (size type) :align (align type) (stride type)))
@@ -384,7 +399,7 @@
               (destructuring-bind (&key offset align major)
                   keys
                 (when (typep (second type)
-                             '(cons (member :struct :block)))
+                             '(cons (member :struct :block :buffer-block)))
                   (error "Can't store anonymous BLOCK or STRUCT in struct."))
                 (when align
                   ;; align must be a power or 2
@@ -411,6 +426,7 @@
                             :offset ,next-offset
                             :align ,malign
                             :size ,msize
+                            :type ,(list mtype *packing* *major*)
                             ,@(when stride
                                 `(:stride ,stride))
                             ,@(when mstride
@@ -425,15 +441,11 @@
                                                  (getf mm :name)))
                                     :offset (+ next-offset
                                                (getf mm :offset))
+                                    :nested t
                                     (alexandria:remove-from-plist
-                                     mm :name :offset))))
+                                     mm :name :offset :nested))))
                     (incf next-offset msize))))))
       (when (eq *packing* :std140)
-        #++(format t "adjust align for struct from ~s to multiple of ~s = ~s~%" salign
-                (align '(:vec (:float 32) 4))
-                (round-to-multiple-of salign
-                      (align '(:vec (:float 32) 4)))
-                )
         (setf salign (round-to-multiple-of salign
                                            (align '(:vec (:float 32) 4)))))
       `(:size ,(round-to-multiple-of next-offset salign)
@@ -442,6 +454,13 @@
         :members ,mdumps))))
 
 (defmethod dump* ((base (eql :block)) type)
+  (destructuring-bind (b (&key major packing instance) &rest members) type
+    (declare (ignore b members instance))
+    (let ((*packing* (or packing *packing*))
+          (*major* (or major *major*)))
+      (dump* :struct type))))
+
+(defmethod dump* ((base (eql :buffer-block)) type)
   (destructuring-bind (b (&key major packing instance) &rest members) type
     (declare (ignore b members instance))
     (let ((*packing* (or packing *packing*))
@@ -502,18 +521,18 @@ data for used scalar/vec/mat types types."
           when (gethash name *known-types*)
             do (error "duplicate type name ~s?~%~s -> ~s~%"
                       name (gethash name *known-types*) type)
-          when (consp type)
+          when (typep type 'type-description)
             do (setf (gethash name *known-types*) type)
-          #++(format t "added type ~s -> ~s~%" name type)
-             (when (and (eq (car type) :block)
-                        (or (not roots)
-                            (member name roots :test 'equal)))
-               (when (assoc name blocks :test 'equal)
-                 (error "duplicate block name ~s?~%~s -> ~s~%"
-                        name
-                        (cdr (assoc name blocks :test 'equal))
-                        type))
-               (push (list name type) blocks)))
+               (format t "added type ~s -> ~s~%" name type)
+               (when (and (member (car type) '(:block :buffer-block))
+                          (or (not roots)
+                              (member name roots :test 'equal)))
+                 (when (assoc name blocks :test 'equal)
+                   (error "duplicate block name ~s?~%~s -> ~s~%"
+                          name
+                          (cdr (assoc name blocks :test 'equal))
+                          type))
+                 (push (list name type) blocks)))
     (setf blocks (nreverse blocks))
     #++(loop for (name type) in blocks
              do (pack-block name type))

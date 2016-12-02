@@ -106,6 +106,7 @@
 ;; vars that should be bound while assembling
 (defvar *next-id*) ;; bind to 0
 (defvar *name->id*) ;; bind to equal hash table (stores anonymous struct and array types as lists)
+(defvar *imported-exts*) ;; bind to equal hash table (stores ext name -> id)
 (defvar *ext-enums*) ;; bind to eq hash table (maps id to enum map)
 ;; used for error checking
 (defvar *enabled-caps*) ;; bind to eq hash table
@@ -120,6 +121,7 @@
 (defmacro with-ll-asm-context (() &body body)
   `(let ((*next-id* 0)
          (*name->id* (make-hash-table :test #'equal))
+         (*imported-exts* (make-hash-table :test #'equal))
          (*ext-enums* (make-hash-table))
          (*enabled-caps* (make-hash-table))
          (*defined-types* (make-hash-table :test #'equal))
@@ -140,6 +142,7 @@
 (defun use-extension (id string)
   (unless (string= string "GLSL.std.450")
     (error "don't know how to assemble extension ~s?" string))
+  (setf (gethash string *imported-exts*) id)
   (setf (gethash id *ext-enums*) (getf 3b-spirv::*spec* :glsl-opcodes)))
 
 (defun check-section (op)
@@ -286,7 +289,8 @@
 (defun asm-string (s?)
   (let* ((s (etypecase s?
               (symbol (translate-symbol-name s?))
-              (string s?)))
+              (string s?)
+              ((cons keyword) (prin1-to-string s?))))
          (o (babel:string-to-octets s :encoding :utf-8))
          (l (length o)))
     ;; null terminated, utf8, in order? pad to multiple of 4
@@ -348,9 +352,8 @@
                      :value)))
     `(add-op ',op
              '(lambda ,lambda-list
-               (let ((*current-op* ',op))
-                 (with-spirv-instruction (,value)
-                   ,@body))))))
+               (with-spirv-instruction (,value)
+                 ,@body)))))
 
 (defop spirv-core:ext-inst  (dest type ext inst &rest operand-ids)
   (asm-type type)
@@ -364,69 +367,70 @@
   (loop for id in operand-ids
         do (asm-id id)))
 
-(defun make-opcodes ()
-  (labels ((assemble-op (type &optional type-var)
-             (let ((enum (gethash type *enum-operand-types*)))
-               (cond
-                 (enum
-                  (@asm-enum type '(pop args)))
-                 ((and (consp type) (eq (car type) :?))
-                  `(when args
-                     ,(assemble-op (second type))))
-                 ((and (consp type) (eq (car type) :*))
-                  `(loop while args
-                         do ,(assemble-op (second type))))
-                 ((consp type)
-                  (error "todo"))
-                 (t
-                  (ecase type
-                    (:id-ref `(asm-id (pop args)))
-                    (:literal-integer
-                     '(asm-word (pop args)))
-                    (:literal-string
-                     '(asm-string (pop args)))
-                    (:pair-literal-integer-id-ref
-                     `(progn
-                        (asm-word (pop args))
-                        (asm-id (pop args))))
-                    (:pair-id-ref-literal-integer
-                     `(progn
-                        (asm-id (pop args))
-                        (asm-word (pop args))))
-                    (:pair-id-ref-id-ref
-                     `(progn
-                        (asm-id (pop args))
-                        (asm-id (pop args))))
-                    (:literal-spec-constant-op-integer
-                     '(asm-word (getf (gethash (pop args)
-                                       (getf 3b-spirv::*spec* :opcodes))
-                                 :value)))
-                    (:literal-context-dependent-number
-                     `(let* ((type-info (gethash ,type-var
-                                                 *defined-types*))
-                             (lisp-type (second type-info))
-                             (raw-value (pop args))
-                             (value (coerce raw-value
-                                            ;; short-float is probably wrong
-                                            ;; size on any implementation
-                                            ;; that has it :/
-                                            (if (eq lisp-type 'short-float)
-                                                'single-float
-                                                lisp-type))))
-                        (ecase (if (consp lisp-type)
-                                   (car lisp-type)
-                                   lisp-type)
-                          (short-float
-                           (asm-float16 value))
-                          (single-float
-                           (asm-float32 value))
-                          (double-float
-                           (asm-float64 value))
-                          ((signed-byte unsigned-byte)
-                           (ecase (second lisp-type)
-                             ((8 16 32)
-                              (asm-word value))
-                             (64 (asm-word64 value)))))))))))))
+
+(labels ((assemble-op (type &optional type-var)
+           (let ((enum (gethash type *enum-operand-types*)))
+             (cond
+               (enum
+                (@asm-enum type '(pop args)))
+               ((and (consp type) (eq (car type) :?))
+                `(when args
+                   ,(assemble-op (second type))))
+               ((and (consp type) (eq (car type) :*))
+                `(loop while args
+                       do ,(assemble-op (second type))))
+               ((consp type)
+                (error "todo"))
+               (t
+                (ecase type
+                  (:id-ref `(asm-id (pop args)))
+                  (:literal-integer
+                   '(asm-word (pop args)))
+                  (:literal-string
+                   '(asm-string (pop args)))
+                  (:pair-literal-integer-id-ref
+                   `(progn
+                      (asm-word (pop args))
+                      (asm-id (pop args))))
+                  (:pair-id-ref-literal-integer
+                   `(progn
+                      (asm-id (pop args))
+                      (asm-word (pop args))))
+                  (:pair-id-ref-id-ref
+                   `(progn
+                      (asm-id (pop args))
+                      (asm-id (pop args))))
+                  (:literal-spec-constant-op-integer
+                   '(asm-word (getf (gethash (pop args)
+                                     (getf 3b-spirv::*spec* :opcodes))
+                               :value)))
+                  (:literal-context-dependent-number
+                   `(let* ((type-info (gethash ,type-var
+                                               *defined-types*))
+                           (lisp-type (second type-info))
+                           (raw-value (pop args))
+                           (value (coerce raw-value
+                                          ;; short-float is probably wrong
+                                          ;; size on any implementation
+                                          ;; that has it :/
+                                          (if (eq lisp-type 'short-float)
+                                              'single-float
+                                              lisp-type))))
+                      (ecase (if (consp lisp-type)
+                                 (car lisp-type)
+                                 lisp-type)
+                        (short-float
+                         (asm-float16 value))
+                        (single-float
+                         (asm-float32 value))
+                        (double-float
+                         (asm-float64 value))
+                        ((signed-byte unsigned-byte)
+                         (ecase (second lisp-type)
+                           ((8 16 32)
+                            (asm-word value))
+                           (64 (asm-word64 value)))))))))))))
+  (defun make-opcodes ()
     (loop
       for (op . info) in (alexandria:hash-table-alist
                           (getf 3b-spirv::*spec* :opcodes))
@@ -442,7 +446,7 @@
                         ,@(unless operands
                             `((declare (ignore args))))
                         ,@(loop for cap in required-capabilities
-                                collect `(setf (gethash ,cap *used-caps*) t))
+                                collect `(assert (gethash ',cap *enabled-caps*)))
                         ,@(when (and resultp ;; ??
                                      ;; type-forward-pointer doesn't have dest?
                                      (alexandria:starts-with-subseq
@@ -475,9 +479,37 @@
                                   collect (assemble-op
                                            type
                                            (when (eq resultp :typed)
-                                             'type))))))))))
+                                             'type)))))))))
+  (defun make-ext-opcodes (ext-name spec-key)
+    (loop
+      with ext-inst = (getf (gethash 'spirv-core:ext-inst
+                                     (getf 3b-spirv::*spec* :opcodes))
+                            :value)
+      for (op . info) in (alexandria:hash-table-alist
+                          (getf 3b-spirv::*spec* spec-key))
+      unless (member op *manual-opcodes*)
+        do (format t "~&generating ext ~s~%" op)
+           (destructuring-bind (&key value required-capabilities operands) info
+             (format t "~s:~s~%" op (mapcar 'car operands))
+             (add-op op
+                     `(lambda (dest type &rest args)
+                        ,@(unless operands
+                            `((declare (ignore args))))
+                        ,@(loop for cap in required-capabilities
+                                collect `(assert (gethash ',cap *enabled-caps*)))
+                        (with-spirv-instruction (,ext-inst)
+                          (asm-type type)
+                          (asm-id dest)
+                          (let ((ext-id (gethash ,ext-name *imported-exts*)))
+                            (if ext-id
+                                (asm-id ext-id)
+                                (error "tried to use instruction ~s from ~s without importing it ~s?" ',op ,ext-name *imported-exts*)))
+                          (asm-word ,value)
+                          ,@(loop for (type name) in operands
+                                  collect (assemble-op type type)))))))))
 
 (make-opcodes)
+(make-ext-opcodes "GLSL.std.450" :glsl-opcodes)
 
 (defmacro add-op-after (op lambda-list &body body)
   (let ((args (gensym "ARGS")))
@@ -504,6 +536,8 @@
          (op (car form))
          (f (gethash op *opcode-functions*)))
     (check-section op)
+    (unless f
+      (error "unknown opcode in ~s?" form))
     (loop for i in (alexandria:ensure-list f)
           do (apply i (cdr form)))))
 
@@ -632,7 +666,7 @@
            (spirv-core:branch @29)
            (spirv-core:label @41)       ; else
            (spirv-core:load %43 :vec4 color2)
-           (spirv-core:ext-inst %44 :vec4 :glsl spirv-glsl450:sqrt %43) ; extended instruction sqrt
+           (spirv-glsl450:sqrt  %44 :vec4 %43) ; extended instruction sqrt
            (spirv-core:load %45 :vec4 scale)
            (spirv-core:f-mul %46 :vec4 %44 %45)
            (spirv-core:store color %46)
