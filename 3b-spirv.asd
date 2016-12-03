@@ -11,5 +11,6 @@
                (:file "patch-spec")
                (:file "writer")
                (:file "low-level")
+               (:file "disasm")
                (:file "high-level")))
 
