@@ -82,11 +82,12 @@
         ;; shouldn't get this, but try to do something useful anyway
         (list (babel:octets-to-string octets :encoding :iso-8859-1)))))
 
-(defun read-id (&optional (prefix "%"))
+(defun read-id (&optional label)
   (let ((w (read-word)))
     (or (gethash w *decode-names*)
         (setf (gethash w *decode-names*)
-              (make-symbol (format nil "~a~a" prefix w))))))
+              (list (if label :label :id) w)
+              #++(make-symbol (format nil "~a~a" prefix w))))))
 
 (defun read-float16 ()
   (decode-float16 (read-word)))
@@ -373,6 +374,8 @@
     (list* (first code) ;; keep header for now
            (mapcar 'decode-op (cdr code)))))
 
+;; todo: add option to add "nice" IDs instead of (:id foo)
+;;   (use names if possible, expand types where possible)
 (defmethod disasm ((v vector))
   (%disasm (read-spirv v)))
 

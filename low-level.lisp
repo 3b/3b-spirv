@@ -106,6 +106,7 @@
 ;; vars that should be bound while assembling
 (defvar *next-id*) ;; bind to 0
 (defvar *name->id*) ;; bind to equal hash table (stores anonymous struct and array types as lists)
+(defvar *id->name*) ;; eql hash table
 (defvar *imported-exts*) ;; bind to equal hash table (stores ext name -> id)
 (defvar *ext-enums*) ;; bind to eq hash table (maps id to enum map)
 ;; used for error checking
@@ -116,11 +117,12 @@
 (defvar *current-section*) ;; bind to 1
 ;; just for debugging
 (defvar *current-form* nil)
-(defvar *id-uses*) ;; hash table
+(defvar *id-conflicts*)
 
 (defmacro with-ll-asm-context (() &body body)
   `(let ((*next-id* 0)
          (*name->id* (make-hash-table :test #'equal))
+         (*id->name* (make-hash-table))
          (*imported-exts* (make-hash-table :test #'equal))
          (*ext-enums* (make-hash-table))
          (*enabled-caps* (make-hash-table))
@@ -128,10 +130,21 @@
          (*defined-constants* (make-hash-table :test #'equal))
          (*defined-globals* (make-hash-table :test #'equal))
          (*current-section* 1)
-         (*id-uses* (make-hash-table))
-         (*current-form* nil))
-     (with-spirv-output ()
-       ,@body)))
+         (*current-form* nil)
+         (*id-conflicts* nil))
+     (flet ((body () ,@body))
+       (let ((out (with-spirv-output ()
+                    (body))))
+         (when *id-conflicts*
+           ;; we had explicit IDs and automatic IDs in same file, and
+           ;; they overlapped, so dump the spv again using the IDs
+           ;; calculated during first attempt
+           (format t "ID conflicts, running 2nd pass...~%")
+           (setf *id-conflicts* nil)
+           (setf out (with-spirv-output ()
+                       (body)))
+           (assert (not *id-conflicts*)))
+         out))))
 
 (defun translate-symbol-name (s)
   ;; not sure if we should have a default package or not?
@@ -244,11 +257,32 @@
 ;;  (may need to add an extra pass in that case to avoid conflicts?
 ;;   possibly only when triggered by actual conflict?)
 ;;  (or store offsets so we can back patch them?)
+(defparameter *use-explicit-IDs* nil)
+(defun explicit-id (id)
+  (when (and *use-explicit-IDs*
+             (typep id '(cons (member :id :label) (cons unsigned-byte))))
+    (let* ((n (second id))
+           (old (gethash n *id->name*)))
+      (when (and old
+                 (not (equal id old)))
+        (setf *id-conflicts* t)
+        (setf (gethash (incf *next-id*) *id->name*) old)
+        (setf (gethash old *name->id*) *next-id*))
+      (setf (gethash n *id->name*) id)
+      (setf (gethash id *name->id*) n))))
+
 (defun id (id)
-  (let ((i (or (gethash id *name->id*)
-               (setf (gethash id *name->id*) (incf *next-id*)))))
-    (when *current-form*
-      (pushnew *current-form* (gethash i *id-uses*) :test 'equal))
+  (let ((i (or (explicit-id id)
+               (gethash id *name->id*))))
+    (unless i
+      ;; find first unused ID (usually next available unless there are
+      ;; explicit IDs). Don't need to flag *id-conflicts* since we can
+      ;; resolve the conflict here
+      (loop for n = (incf *next-id*)
+            while (gethash n *id->name*)
+            finally (setf (gethash n *id->name*) id
+                          (gethash id *name->id*) n
+                          i n)))
     i))
 
 (defparameter *opcode-functions* (make-hash-table))
@@ -567,9 +601,7 @@
                               '< :key 'cdr)
             do (format t "    ~16s : ~s~@[ t=~s~]~@[ c=~s~]~%" a b
                        (cdr (gethash a *defined-types*))
-                       (cdr (gethash a *defined-constants*)))
-            #++(loop for f in (reverse (gethash b *id-uses*))
-                     do (format t "      ~s~%" f)))
+                       (cdr (gethash a *defined-constants*))))
       (finish-spirv (1+ *next-id*)))))
 
 
