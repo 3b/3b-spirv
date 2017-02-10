@@ -1,5 +1,11 @@
 (in-package #:3b-spirv)
 
+(define-condition cap-not-enabled (error)
+  ((cap :initarg :cap :initform nil :reader cap))
+  (:report (lambda (c s)
+             (format s "Tried to use capability ~s without enabling it?"
+                     (cap c)))) )
+
 (defparameter *manual-opcodes* '(spirv-core:ext-inst))
 
 (defparameter *enum-operand-types*
@@ -117,7 +123,9 @@
 (defvar *current-section*) ;; bind to 1
 ;; just for debugging
 (defvar *current-form* nil)
-(defvar *id-conflicts*)
+(defvar *need-second-pass*)
+(defvar *automatic-entry-point-deps*)
+(defvar *automatic-caps*)
 
 (defmacro with-ll-asm-context (() &body body)
   `(let ((*next-id* 0)
@@ -131,19 +139,22 @@
          (*defined-globals* (make-hash-table :test #'equal))
          (*current-section* 1)
          (*current-form* nil)
-         (*id-conflicts* nil))
+         (*need-second-pass* nil)
+         (*automatic-caps*)
+         (*automatic-entry-point-deps*))
      (flet ((body () ,@body))
        (let ((out (with-spirv-output ()
                     (body))))
-         (when *id-conflicts*
+         (when *need-second-pass*
            ;; we had explicit IDs and automatic IDs in same file, and
            ;; they overlapped, so dump the spv again using the IDs
            ;; calculated during first attempt
-           (format t "ID conflicts, running 2nd pass...~%")
-           (setf *id-conflicts* nil)
+           (format t "running 2nd pass (~s)...~%" *need-second-pass*)
+           (setf *need-second-pass* nil
+                 *current-section* 1)
            (setf out (with-spirv-output ()
                        (body)))
-           (assert (not *id-conflicts*)))
+           (assert (not *need-second-pass*)))
          out))))
 
 (defun translate-symbol-name (s)
@@ -158,20 +169,39 @@
   (setf (gethash string *imported-exts*) id)
   (setf (gethash id *ext-enums*) (getf 3b-spirv::*spec* :glsl-opcodes)))
 
+(defun add-missing-caps ()
+  (loop for c = (pop *automatic-caps*)
+        while c
+        do (format t "adding cap ~s~%" c)
+        do (ll-assemble1 `(spirv-core:capability ,c))))
+
 (defun check-section (op)
   ;; section numbers from
   ;; https://www.khronos.org/registry/spir-v/specs/1.1/SPIRV.html#_a_id_logicallayout_a_logical_layout_of_a_module
   (let* ((section (gethash op *opcode-sections* '(11)))
          (min (reduce 'min section)))
+    (when (and (<= *current-section* 1)
+               (<= 2 min))
+      (add-missing-caps))
     (unless (member *current-section* section)
       (if (< *current-section* min)
           (setf *current-section* min)
           (error "got instruction ~s in section ~s, should be in ~s" op
                  *current-section* section)))))
 
+
 (defun check-cap (cap)
-  (assert (gethash cap *enabled-caps*) ()
-          "tried to use capability ~s without enabling it?" cap))
+  (format t "check cap ~s (~s ~s)~%" cap
+           (gethash cap *enabled-caps*)
+              (member cap *automatic-caps*))
+  (unless (or (gethash cap *enabled-caps*)
+              (member cap *automatic-caps*))
+    (restart-case
+        (error (make-condition 'cap-not-enabled :cap cap))
+      (add-caps ()
+        :report "Add capabilities automatically"
+        (pushnew :missing-caps *need-second-pass*)
+        (pushnew cap *automatic-caps*)))))
 
 (defun use-type (type &key define)
   #++(when define (format t "define types ~s~%" type))
@@ -234,21 +264,25 @@
 
 (defun use-constant (name &key define)
   (when define
-    (when (gethash name *defined-constants*)
-      (error "redefining constant ~s? ~s -> ~s~%"
-             name (gethash name *defined-constants*)
-             define))
+    (let ((old (gethash name *defined-constants*)))
+      (when (and old (not (equalp define (cdr old))))
+       (error "redefining constant ~s (~s)? ~s -> ~s~%"
+              name (car old)
+              (cdr old)
+              define)))
     (setf (gethash name *defined-constants*)
           (list* (id name) define)))
   (or (car (gethash name *defined-constants*))
       (error "tried to use undefined constant ~s?" name)))
 
 (defun define-global (name type storage-class)
-  (when (gethash name *defined-globals*)
-    (error "multiple definitions for variable ~s?~% ~s -> ~s~%"
-           name
-           (gethash name *defined-globals*)
-           (list name type storage-class)))
+  (let ((old (gethash name *defined-globals*)))
+    (when (and old (not (equal (cdr old)
+                               (list type storage-class))))
+      (error "multiple definitions for variable ~s?~% ~s -> ~s~%"
+             name
+             (gethash name *defined-globals*)
+             (list (id name) type storage-class))))
   (setf (gethash name *defined-globals*) (list (id name) type storage-class))
   (id name))
 
@@ -265,7 +299,7 @@
            (old (gethash n *id->name*)))
       (when (and old
                  (not (equal id old)))
-        (setf *id-conflicts* t)
+        (push :id-conflicts *need-second-pass*)
         (setf (gethash (incf *next-id*) *id->name*) old)
         (setf (gethash old *name->id*) *next-id*))
       (setf (gethash n *id->name*) id)
@@ -480,7 +514,7 @@
                         ,@(unless operands
                             `((declare (ignore args))))
                         ,@(loop for cap in required-capabilities
-                                collect `(assert (gethash ',cap *enabled-caps*)))
+                                collect `(check-cap ,cap))
                         ,@(when (and resultp ;; ??
                                      ;; type-forward-pointer doesn't have dest?
                                      (alexandria:starts-with-subseq
@@ -530,7 +564,7 @@
                         ,@(unless operands
                             `((declare (ignore args))))
                         ,@(loop for cap in required-capabilities
-                                collect `(assert (gethash ',cap *enabled-caps*)))
+                                collect `(check-cap ,cap))
                         (with-spirv-instruction (,ext-inst)
                           (asm-type type)
                           (asm-id dest)
@@ -558,6 +592,9 @@
 
 (add-op-after spirv-core:ext-inst-import (dest name)
   (use-extension dest name))
+
+(add-op-after spirv-core:capability (cap)
+  (setf (gethash cap *enabled-caps*) t))
 
 (add-op-after spirv-core:variable (id type storage-class
                                       &optional initial-value)
@@ -725,7 +762,10 @@
            (spirv-core:store i %62)
            (spirv-core:branch @49)      ; loop back
            (spirv-core:label @51)       ; loop merge point
-           ;;(spirv-core:bit-reverse %70 :int32 %54) ;; something with caps
+           ;; something with caps :
+           ;;(spirv-core:bit-reverse %70 :int32 %54)
+           ;; something with unspecified caps :
+           ;;(spirv-core:dp-dx-fine %70 :float32 %54)
            (spirv-core:return)
            (spirv-core:function-end)))))
   (with-open-file (f "/tmp/example.spv"
