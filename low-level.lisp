@@ -5,7 +5,7 @@
 (defparameter *enum-operand-types*
   (alexandria:plist-hash-table
    '(:id-scope :scope
-     :id-memory-semantics :memory-access
+     :id-memory-semantics :memory-semantics
      :image-operands :image-operands
      :storage-class :storage-class
      :source-language :source-language
