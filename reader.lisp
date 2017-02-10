@@ -8,14 +8,25 @@
       do (setf (gethash (getf n :value)
                         *opcodes-by-value*) op))
 
-(defun read-word ()
+(defun read-word (&key (errorp t))
   (etypecase *spirv-input*
     (stream
-     (read-byte *spirv-input* nil nil))
+     (read-byte *spirv-input* errorp nil))
     ((cons unsigned-byte vector)
-     (assert (array-in-bounds-p (cdr *spirv-input*) (car *spirv-input*)))
-     (prog1 (aref (cdr *spirv-input*) (car *spirv-input*))
-       (incf (car *spirv-input*))))))
+     (destructuring-bind (index . array) *spirv-input*
+       (let ((ok (if (array-has-fill-pointer-p array)
+                     (< index (fill-pointer array))
+                     (array-in-bounds-p array index))))
+        (unless ok
+          (if errorp
+              (error "index ~s out of bounds (size:~s,fill:~s)"
+                     index
+                     (array-dimensions array)
+                     (when (array-has-fill-pointer-p array)
+                       (fill-pointer array)))
+              (return-from read-word nil))))
+       (prog1 (aref array index)
+         (incf (car *spirv-input*)))))))
 
 (defun read-header ()
   (let ((h (list :magic (read-word)
@@ -28,10 +39,10 @@
     h))
 
 (defun read-inst ()
-  (let* ((op+size (or (read-word) (return-from read-inst nil)))
+  (let* ((op+size (or (read-word :errorp nil) (return-from read-inst nil)))
          (op (ldb (byte 16 0) op+size))
          (size (ldb (byte 16 16) op+size)))
-    (list* (gethash op *opcodes-by-value* op)
+    (list* (print (gethash op *opcodes-by-value* op))
            (loop for i from 1 below size
                  collect (read-word)))))
 
@@ -53,5 +64,9 @@
 
 #++
 (with-open-file (s "/tmp/example-hl2.spv"
+                   :element-type '(unsigned-byte 32))
+  (read-spirv s))
+
+(with-open-file (s "/tmp/3bgl-shader.spv"
                    :element-type '(unsigned-byte 32))
   (read-spirv s))
