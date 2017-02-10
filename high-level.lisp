@@ -682,7 +682,8 @@
   (let* ((decl (cdar body))
          (values (cdr (assoc 'values decl))))
     `((spirv-core:function ,name
-                           ,(or (car values) '(:void))
+                           ,(normalize-literals-and-types
+                             (or (car values) ':void) :force t)
                            ,(cadr (assoc 'function-control decl))
                            ,(cadr (assoc 'ftype decl)))
       ,@(loop for d in (cdddr (assoc 'ftype decl))
