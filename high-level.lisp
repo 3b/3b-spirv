@@ -36,7 +36,7 @@
 (defvar *struct-types*)
 (defvar *variables*)
 (defvar *extensions*)
-;(defvar *literals*)
+(defvar *literal-names*) ;; allow alternate names for literals
 ;(defvar *globals*)
 (defvar *entry-points*)
 (defvar *current-function*)
@@ -49,6 +49,7 @@
          (*types* (make-hash-table :test #'equal))
          (*struct-types* (make-hash-table :test #'equal))
          (*variables* (make-hash-table :test #'equal))
+         (*literal-names* (make-hash-table :test #'equal))
          (*type-deps* (make-hash-table :test #'equal))
          (*extensions* (make-hash-table :test #'equal))
          (*entry-points* (make-hash-table :test #'equal)))
@@ -121,6 +122,9 @@
 (defparameter *in-struct* nil)
 
 (defun composite-literal (type value)
+  (when (typep value '(cons (eql :literal)))
+    ;; don't wrap things that are already literals
+    (return-from composite-literal value))
   (etypecase type
     (scalar
      `(:literal ,type ,value))
@@ -172,6 +176,7 @@
        ((gethash x *base-types*)
         ;; expand base types (:int, :vec4 etc)
         (use-type (gethash x *base-types*)))
+       ((gethash x *literal-names*)) ;; expand named literals
        (force
         (cond
           ((eq force :variable)
@@ -420,6 +425,12 @@
                  :decorate decorate :default default
                  (when layout (list :layout layout))))))
 
+
+(defpass1 literal (id type value)
+  (setf (gethash id *literal-names*)
+        (normalize-literals-and-types `(the ,type ,value)))
+  (setf *current-form* nil))
+
 (defpass1 input (id type &key decorate default)
   (pass1/variable :input id type decorate default))
 
@@ -607,6 +618,27 @@
                       id type var new-indices)))
       (unless (equal *current-form* new)
         (setf *current-form* new)))))
+
+(defmethod pass1 :around ((op (eql 'spirv-core:composite-construct)) args)
+  (destructuring-bind (name type &rest values) args
+    (let ((nv (mapcar 'normalize-literals-and-types values)))
+      (cond
+        ;; all arguments are literals, convert to a constant
+        ;; fixme: make sure this catches named constants too
+        ((every (lambda (x) (typep x '(cons (eql :literal)))) nv)
+         ;; add name as an alias for the literal
+         (let* ((l (composite-literal (normalize-literals-and-types type) nv)))
+           #+=(format t "~&cc ~s ->~% ~s~% @ ~s (~s)->   ~s~%" values
+                      nv
+                      type (normalize-literals-and-types type)
+                      l)
+           (use-type l)
+           (setf (gethash name *literal-names*) l))
+         ;; and drop the instruction since it will be created as a
+         ;; constant instead
+         (setf *current-form* nil))
+        ;; non-constant arguments, handle normally
+        (t (call-next-method))))))
 
 (defun first-pass (code)
   (loop for form in code
@@ -1005,6 +1037,12 @@
     nil))
 
 #++
+(assemble '((literal foo :int 0)
+            (spirv-core:store i foo)
+            (literal bar :int 0)
+            (spirv-core:store i bar)))
+
+#++
 (assemble-to-file
  "/tmp/example-hl2.spv"
  '( ;; (capabilities &rest caps) ;; 1x
@@ -1066,7 +1104,8 @@
      (spirv-core:branch @53)
      (spirv-core:label @53)
      (spirv-core:load %54 :int i)
-     (spirv-core:s-less-than %56 :bool %54 (the :int 4)) ; i < 4
+     (literal %l4 :int 4) ;; alternate syntax for literals
+     (spirv-core:s-less-than %56 :bool %54 %l4) ; i < 4
      (spirv-core:branch-conditional %56 @50 @51) ; body or break
      (spirv-core:label @50)                      ; body
      (spirv-core:load %58 :vec4 multiplier)
