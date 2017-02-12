@@ -319,8 +319,8 @@
 (add-decode-after spirv-core:type-vector (id type size)
   (add-decoded-type id `((:vec ,type ,size))))
 
-(add-decode-after spirv-core:type-matrix (id type s1 s2)
-  (add-decoded-type id `((:mat ,type ,s1 ,s2))))
+(add-decode-after spirv-core:type-matrix (id column-type column-count)
+  (add-decoded-type id `((:mat ,column-type ,column-count))))
 
 (add-decode-after spirv-core:type-array (id type size)
   (add-decoded-type id `((:array ,type ,size))))
