@@ -31,6 +31,7 @@
                            (cons list)))
 (deftype variable () '(cons (eql :variable)))
 (deftype scalar () '(cons (member :bool :int :uint :float)))
+(deftype literal () '(cons (eql :literal)))
 
 (defvar *types*)
 (defvar *struct-types*)
@@ -135,7 +136,11 @@
                          for v in value
                          collect (use-type (composite-literal mt v))))))
     ((cons (member :array :vec))
-     (assert (= (third type) (length value)))
+     (when (eq (car type) :array)
+       ;; todo: check # of values for :vec literals
+       ;; vec allows things like (vec4 1.0 (vec2 2.0 3.0) 4.0), so
+       ;; just relaxing checking on it for now...
+       (assert (= (third type) (length value))))
      `(:literal ,type
                 (:composite
                  ,@(loop with mt = (second type)
@@ -162,15 +167,24 @@
      (let ((bt (if *in-struct* :uint :bool)))
        (use-type (gethash bt *base-types*))))
     (unsigned-byte
+     (use-type '(:uint 32))
      (use-type `(:literal (:uint 32) ,x)))
     (signed-byte
+     (use-type '(:int 32))
      (use-type `(:literal (:int 32) ,x)))
     (real
+     (use-type '(:float 32))
      (use-type `(:literal (:float 32) ,x)))
     ((cons (eql the))
-     (use-type
-      (composite-literal (normalize-literals-and-types (second x) :force t)
-                         (third x))))
+     (let* ((nt (normalize-literals-and-types (second x) :force t))
+            (.nv (mapcar 'normalize-literals-and-types (cddr x)))
+            (nv (if (typep nt 'scalar)
+                    (first .nv)
+                    .nv)))
+       (use-type nt)
+       (if (every (lambda (x) (typep x 'literal)) .nv)
+           (use-type (composite-literal nt nv))
+           (use-type `(the ,nt ,nv)))))
     ((or string symbol)
      (cond
        ((gethash x *base-types*)
@@ -232,7 +246,13 @@
               ;; (and if so, how they work)
               (normalize-literals-and-types (third x)) ;; literal or variable
               layout)))
-    ((cons (member :vec :mat))
+    ((cons (member :vec))
+     (list* (first x)
+            (normalize-literals-and-types (second x) :force t)
+            (cddr x)))
+    ((cons (member :mat))
+     ;; define the column type
+     (use-type `(:vec ,(second x) ,(third x)) :force t)
      (list* (first x)
             (normalize-literals-and-types (second x) :force t)
             (cddr x)))
@@ -626,6 +646,8 @@
         ;; all arguments are literals, convert to a constant
         ;; fixme: make sure this catches named constants too
         ((every (lambda (x) (typep x '(cons (eql :literal)))) nv)
+         (loop for l in nv
+               do (use-type (second nv)))
          ;; add name as an alias for the literal
          (let* ((l (composite-literal (normalize-literals-and-types type) nv)))
            #+=(format t "~&cc ~s ->~% ~s~% @ ~s (~s)->   ~s~%" values
@@ -709,9 +731,13 @@
                              0)
                             ((cons (eql :composite))
                              (reduce 'max (mapcar #'r (cdr x))))
-                            ((cons (member :vec :mat :literal))
+                            ((cons (member :vec :literal))
                              (1+ (max (r (second x))
                                       (r (third x)))))
+                            ((cons (member :mat))
+                             (1+ (max (r `(:vec ,(second x) ,(third x)))
+                                      (r (fourth x)))))
+
                             ((cons (member :array))
                              (1+ (max (r (second x))
                                       (r (third x)))))
