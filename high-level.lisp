@@ -21,7 +21,8 @@
     spirv-core:type-int
     spirv-core:line
     spirv-core:member-name
-    spirv-core:source))
+    spirv-core:source
+    spirv-core:composite-extract))
 
 ;; check for list in 2nd cons to distinguish from automatic names
 ;; like (:block foo)
@@ -160,7 +161,12 @@
   (setf (gethash type *types*) definition)
   type)
 
-(defun normalize-literals-and-types (x &key force layout (expand-structs t))
+(defun normalize-literals-and-types (x &key force layout (expand-structs t)
+                                         keep-literals
+                                         the)
+  (when (and (numberp x)
+             keep-literals)
+    (return-from normalize-literals-and-types x))
   (typecase x
     ((or (eql :bool)
          (cons (eql :bool)))
@@ -168,20 +174,24 @@
        (use-type (gethash bt *base-types*))))
     (unsigned-byte
      (use-type '(:uint 32))
-     (use-type `(:literal (:uint 32) ,x)))
+     (use-type `(:literal ,(or the '(:uint 32)) ,x)))
     (signed-byte
      (use-type '(:int 32))
-     (use-type `(:literal (:int 32) ,x)))
+     (use-type `(:literal ,(or the '(:int 32)) ,x)))
     (real
      (use-type '(:float 32))
-     (use-type `(:literal (:float 32) ,x)))
+     (use-type `(:literal ,(or the '(:float 32)) ,x)))
     ((cons (eql the))
      (let* ((nt (normalize-literals-and-types (second x) :force t))
-            (.nv (mapcar 'normalize-literals-and-types (cddr x)))
+            (.nv (mapcar (lambda (x)
+                           (normalize-literals-and-types x :the nt))
+                         (cddr x)))
             (nv (if (typep nt 'scalar)
                     (first .nv)
                     .nv)))
        (use-type nt)
+       (when (and the (not (equal the nt)))
+         (error "nested THE? figure out correct way to handle this..."))
        (if (every (lambda (x) (typep x 'literal)) .nv)
            (use-type (composite-literal nt nv))
            (use-type `(the ,nt ,nv)))))
@@ -234,7 +244,7 @@
                                               :force t
                                               :layout layout
                                               :expand-structs expand-structs))
-            (xt (if expand-structs
+            #++(xt (if expand-structs
                     bt
                     (normalize-literals-and-types (second x)
                                                   :force t
@@ -321,11 +331,12 @@
     (error "explicit type/constant ops not handled correctly yet..."))
   ;; handle literals in default case since it applies to most
   ;; instructions, and just have a list of ops to skip
-  (unless (member op *no-auto-constants-ops*)
-    (let ((a (loop for i in args
-                   collect (normalize-literals-and-types i))))
-      (unless (equal a (cdr *current-form*))
-        (setf *current-form* (cons op a))))))
+  (let ((a (loop for i in args
+                 collect (normalize-literals-and-types
+                          i
+                          :keep-literals (member op *no-auto-constants-ops*)))))
+    (unless (equal a (cdr *current-form*))
+      (setf *current-form* (cons op a)))))
 
 (defmacro defpass1 (op lambda-list &body body)
   (let ((args (gensym "ARGS")))
