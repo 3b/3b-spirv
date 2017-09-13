@@ -1043,23 +1043,28 @@
 
 
 (defun assemble (code)
-  (with-hl-asm-context ()
-    (setf code (first-pass code))
-    (let ((tt (alexandria:hash-table-alist *types*)))
-      (format t "literals=~{~s=> ~s~%~^        ~}"
-              (alexandria:alist-plist
-               (remove :literal tt
-                       :test-not 'eql
-                       :key (lambda (a) (and (consp (car a)) (caar a))))))
-      (format t "types=~{~s=> ~s~%~^      ~}"
-              (alexandria:alist-plist
-               (remove :literal tt
-                       :key (lambda (a) (and (consp (car a)) (caar a)))))))
-    (format t "code1=~s~%" code)
-    (setf code (second-pass code))
-    (format t "code2=~{~s~^~%      ~}~%" code)
-    (list *types* *type-deps* *entry-points* code)
-    (3b-spirv::ll-assemble code)))
+  (handler-bind
+      ((3b-spirv::cap-not-enabled
+         (lambda (c) (declare (ignorable c))
+           (format t "~&%%%%%enabling cap ~s~%" (3b-spirv::cap c))
+           (invoke-restart '3b-spirv::add-caps))))
+   (with-hl-asm-context ()
+     (setf code (first-pass code))
+     (let ((tt (alexandria:hash-table-alist *types*)))
+       (format t "literals=~{~s=> ~s~%~^        ~}"
+               (alexandria:alist-plist
+                (remove :literal tt
+                        :test-not 'eql
+                        :key (lambda (a) (and (consp (car a)) (caar a))))))
+       (format t "types=~{~s=> ~s~%~^      ~}"
+               (alexandria:alist-plist
+                (remove :literal tt
+                        :key (lambda (a) (and (consp (car a)) (caar a)))))))
+     (format t "code1=~s~%" code)
+     (setf code (second-pass code))
+     (format t "code2=~{~s~^~%      ~}~%" code)
+     (list *types* *type-deps* *entry-points* code)
+     (3b-spirv::ll-assemble code))))
 
 
 (defun assemble-to-file (filename code)
