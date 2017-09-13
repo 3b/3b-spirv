@@ -57,62 +57,6 @@
          (*entry-points* (make-hash-table :test #'equal)))
      ,@body))
 
-;; not sure these really need to be here, since compilers will probably
-;; be doing basically same thing
-(defparameter *base-types*
-  (alexandria:plist-hash-table
-   `(:void (:void)
-     :bool (:bool)
-     :float16 (:float 16)
-     :float32 (:float 32)
-     :float64 (:float 64)
-     :float (:float 32)
-     :double (:float 64)
-     :int (:int 32)
-     :uint (:uint 32)
-     ,@(loop for b in `(8 16 32 64)
-             collect (alexandria:format-symbol :keyword "INT~a" b)
-             collect `(:int ,b)
-             collect (alexandria:format-symbol :keyword "UINT~a" b)
-             collect `(:uint ,b))
-     ,@(loop for i from 2 to 4
-             collect (alexandria:format-symbol :keyword "BVEC~a" i)
-             collect `(:vec (:bool) ,i)
-             collect (alexandria:format-symbol :keyword "IVEC~a" i)
-             collect `(:vec (:int 32) ,i)
-             collect (alexandria:format-symbol :keyword "UVEC~a" i)
-             collect `(:vec (:uint 32) ,i)
-             append (loop for b in `(8 16 64)
-                          collect (alexandria:format-symbol :keyword
-                                                            "I~aVEC~a" b i)
-                          collect `(:vec (:int ,b) ,i)
-                          collect (alexandria:format-symbol :keyword
-                                                            "U~aVEC~a" b i)
-                          collect `(:vec (:uint ,b) ,i))
-             collect (alexandria:format-symbol :keyword "F16VEC~a" i)
-             collect `(:vec (:float 16) ,i)
-             collect (alexandria:format-symbol :keyword "VEC~a" i)
-             collect `(:vec (:float 32) ,i)
-             collect (alexandria:format-symbol :keyword "DVEC~a" i)
-             collect `(:vec (:float 64) ,i))
-     :mat2 (:mat (:float 32) 2 2)
-     :mat3 (:mat (:float 32) 3 3)
-     :mat4 (:mat (:float 32) 4 4)
-     :dmat2 (:mat (:float 64) 2 2)
-     :dmat3 (:mat (:float 64) 3 3)
-     :dmat4 (:mat (:float 64) 4 4)
-     ,@ (loop for r from 2 to 4
-              append (loop for c from 2 to 4
-                           collect (alexandria:format-symbol :keyword
-                                                             "F16MAT~aX~a" c r)
-                           collect `(:mat (:float 16) ,c ,r)
-                           collect (alexandria:format-symbol :keyword
-                                                             "MAT~aX~a" c r)
-                           collect `(:mat (:float 32) ,c ,r)
-                           collect (alexandria:format-symbol :keyword
-                                                             "DMAT~aX~a" c r)
-                           collect `(:mat (:float 64) ,c ,r))))))
-
 (defun avm-type-len (type &optional (axis 0))
   (let ((n (elt type (+ 2 axis))))
     (if (numberp n)
@@ -171,7 +115,7 @@
     ((or (eql :bool)
          (cons (eql :bool)))
      (let ((bt (if *in-struct* :uint :bool)))
-       (use-type (gethash bt *base-types*))))
+       (use-type (gethash bt glsl-packing:*base-types*))))
     (unsigned-byte
      (use-type '(:uint 32))
      (use-type `(:literal ,(or the '(:uint 32)) ,x)))
@@ -197,9 +141,9 @@
            (use-type `(the ,nt ,nv)))))
     ((or string symbol)
      (cond
-       ((gethash x *base-types*)
+       ((gethash x glsl-packing:*base-types*)
         ;; expand base types (:int, :vec4 etc)
-        (use-type (gethash x *base-types*)))
+        (use-type (gethash x glsl-packing:*base-types*)))
        ((gethash x *literal-names*)) ;; expand named literals
        (force
         (cond
@@ -502,8 +446,8 @@
                      when (or (member declaration '(values  type
                                                     :layout :function-control))
                               ;; allow base type as shortcut for TYPE
-                              (gethash declaration *base-types*))
-                       do (if (gethash declaration *base-types*)
+                              (gethash declaration glsl-packing:*base-types*))
+                       do (if (gethash declaration glsl-packing:*base-types*)
                               ;; expand TYPE shortcuts
                               (push (list* 'type dec) all-declarations)
                               (push dec all-declarations))
@@ -819,7 +763,7 @@
         (variables (alexandria:hash-table-keys *variables*))
         #++(*remapped-types* (make-hash-table :test #'equal)))
     (declare (ignorable orig-code))
-    #++(loop for (n . type) in (alexandria:hash-table-alist *base-types*)
+    #++(loop for (n . type) in (alexandria:hash-table-alist glsl-packing:*base-types*)
              do (setf (gethash n *remapped-types*) type))
     (loop
       for (n . type) in (alexandria:hash-table-alist *types*)

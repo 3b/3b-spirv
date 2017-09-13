@@ -1,6 +1,6 @@
 (defsystem 3b-spirv
   :description "SPIRV assembler/disassembler and related tools"
-  :depends-on (alexandria babel ieee-floats)
+  :depends-on (alexandria babel ieee-floats glsl-packing)
   :serial t
   :license "MIT"
   :author "Bart Botta <00003b at gmail.com>"
