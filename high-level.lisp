@@ -840,7 +840,7 @@
                                    (setf (gethash x pack-index) i)
                                 and collect (list i (translate-for-packing x)))))
           (format t "pack = ~s~%" to-pack)
-          (setf pack (glsl-packing:pack-structs to-pack))
+          (setf pack (glsl-packing:pack-structs to-pack :dump-base-types t))
 
           (format t "packed = ~s~%" pack)
           (append
