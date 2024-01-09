@@ -4,8 +4,7 @@
   :serial t
   :license "MIT"
   :author "Bart Botta <00003b at gmail.com>"
-  :components ((:file "glsl-packing")
-               (:file "package")
+  :components ((:file "package")
                (:file "op-packages")
                (:file "spec")
                (:file "patch-spec")
